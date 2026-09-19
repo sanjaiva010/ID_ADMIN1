@@ -18,11 +18,20 @@
   #reader { width:100%; border-radius:10px; overflow:hidden; margin-bottom:10px; }
   .scan-hint { text-align:center; font-size:12px; color:#888; margin-bottom:16px; }
 
+  .setup-warning { background:#fdecea; border:2px solid #c0392b; color:#c0392b; border-radius:10px; padding:14px; margin-bottom:16px; font-size:13px; font-weight:bold; text-align:center; display:none; }
+  .setup-warning.show { display:block; }
+
+  .api-status { font-size:12px; text-align:center; margin:-8px 0 14px; min-height:16px; }
+  .api-status.error { color:#c0392b; font-weight:bold; }
+  .api-status.ok { color:#1e8e3e; }
+  .api-status.loading { color:#888; }
+
   .manual-entry { background:white; border-radius:10px; padding:14px 16px; box-shadow:0 2px 6px rgba(0,0,0,0.08); margin-bottom:16px; }
   .manual-entry label { display:block; font-size:12px; font-weight:bold; color:#555; margin-bottom:6px; }
   .manual-row { display:flex; gap:8px; }
   .manual-row input { flex:1; padding:10px; border-radius:8px; border:1px solid #ccc; font-size:14px; box-sizing:border-box; }
   .manual-row button { padding:10px 16px; border:none; border-radius:8px; background:#4B0082; color:white; font-weight:bold; cursor:pointer; }
+  .manual-row button:disabled { background:#ccc; cursor:not-allowed; }
 
   .result-card { background:white; border-radius:12px; padding:18px; box-shadow:0 2px 8px rgba(0,0,0,0.1); display:none; }
   .result-card.show { display:block; }
@@ -42,7 +51,13 @@
 <div class="wrap">
   <h1>Admin Scanner - Entry Check-in</h1>
 
+  <div class="setup-warning" id="setupWarning">
+    SCRIPT_URL is not set. Open this file, find the line starting with<br>
+    <code>const SCRIPT_URL = ...</code><br>and paste your Apps Script /exec URL there.
+  </div>
+
   <div class="counters" id="counters"></div>
+  <div class="api-status" id="apiStatus"></div>
 
   <div id="reader"></div>
   <p class="scan-hint">Hold the QR steady, well-lit, filling most of the frame. If it won't scan, use manual entry below.</p>
@@ -51,7 +66,7 @@
     <label>Manual Entry Code (backup if camera scan fails)</label>
     <div class="manual-row">
       <input id="manualCode" type="text" placeholder="e.g. ID-AB12CD" autocapitalize="characters">
-      <button onclick="submitManualCode()">Lookup</button>
+      <button id="manualBtn" onclick="submitManualCode()">Lookup</button>
     </div>
   </div>
 
@@ -75,10 +90,28 @@
   let currentCode = null;
   let scanning = true;
 
+  function setApiStatus(msg, type) {
+    const el = document.getElementById('apiStatus');
+    el.textContent = msg || '';
+    el.className = 'api-status' + (type ? ' ' + type : '');
+  }
+
+  // Catch the #1 most common setup mistake immediately and loudly.
+  if (!SCRIPT_URL || SCRIPT_URL.indexOf('PASTE_YOUR') !== -1) {
+    document.getElementById('setupWarning').classList.add('show');
+    setApiStatus('Cannot contact server - SCRIPT_URL not configured.', 'error');
+  }
+
   function loadStats() {
+    if (!SCRIPT_URL || SCRIPT_URL.indexOf('PASTE_YOUR') !== -1) return;
+    setApiStatus('Loading counters...', 'loading');
     fetch(SCRIPT_URL + "?action=stats")
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error('Server responded with status ' + r.status);
+        return r.json();
+      })
       .then(stats => {
+        setApiStatus('Connected.', 'ok');
         const el = document.getElementById('counters');
         el.innerHTML = '';
         Object.keys(stats).forEach(college => {
@@ -90,7 +123,10 @@
           el.appendChild(div);
         });
       })
-      .catch(err => console.error('Stats error:', err));
+      .catch(err => {
+        console.error('Stats error:', err);
+        setApiStatus('Cannot reach server: ' + err.message, 'error');
+      });
   }
   loadStats();
   setInterval(loadStats, 8000);
@@ -102,31 +138,54 @@
   }
 
   function submitManualCode() {
+    if (!SCRIPT_URL || SCRIPT_URL.indexOf('PASTE_YOUR') !== -1) {
+      setApiStatus('Cannot contact server - SCRIPT_URL not configured.', 'error');
+      return;
+    }
     const input = document.getElementById('manualCode');
+    const btn = document.getElementById('manualBtn');
     const code = input.value.trim();
     if (!code) return;
-    lookupCode(code, () => {});
-    input.value = '';
+
+    btn.disabled = true;
+    btn.textContent = 'Looking up...';
+    setApiStatus('Looking up ' + code + '...', 'loading');
+
+    lookupCode(code, () => {
+      btn.disabled = false;
+      btn.textContent = 'Lookup';
+    });
   }
 
   function lookupCode(code, onDone) {
     currentCode = code;
     fetch(SCRIPT_URL + "?action=lookup&code=" + encodeURIComponent(code))
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error('Server responded with status ' + r.status);
+        return r.json();
+      })
       .then(res => {
         document.getElementById('notFound').style.display = 'none';
+        if (res.error) {
+          setApiStatus('Server error: ' + res.error, 'error');
+          onDone();
+          return;
+        }
         if (!res.found) {
+          setApiStatus('Code not found: ' + code, 'error');
           document.getElementById('notFound').style.display = 'block';
           document.getElementById('resultCard').classList.remove('show');
           setTimeout(onDone, 1500);
           return;
         }
+        setApiStatus('Found: ' + res.member.name, 'ok');
         showResult(res.member);
         onDone();
       })
       .catch(err => {
         console.error('Lookup error:', err);
-        setTimeout(onDone, 1500);
+        setApiStatus('Cannot reach server: ' + err.message, 'error');
+        onDone();
       });
   }
 
@@ -158,9 +217,19 @@
     btn.innerText = 'Confirming...';
 
     fetch(SCRIPT_URL + "?action=checkin&code=" + encodeURIComponent(currentCode))
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error('Server responded with status ' + r.status);
+        return r.json();
+      })
       .then(res => {
+        if (res.error) {
+          setApiStatus('Server error: ' + res.error, 'error');
+          btn.disabled = false;
+          btn.innerText = 'Confirm Entry';
+          return;
+        }
         if (res.found) {
+          setApiStatus('Checked in: ' + res.member.name, 'ok');
           showResult(res.member);
           loadStats();
         }
@@ -172,6 +241,7 @@
       })
       .catch(err => {
         console.error('Checkin error:', err);
+        setApiStatus('Cannot reach server: ' + err.message, 'error');
         btn.disabled = false;
         btn.innerText = 'Confirm Entry';
       });
