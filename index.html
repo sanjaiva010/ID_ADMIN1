@@ -15,7 +15,14 @@
   .counter-card b { color:#4B0082; }
   .counter-card .nums { font-weight:bold; font-size:16px; }
 
-  #reader { width:100%; border-radius:10px; overflow:hidden; margin-bottom:16px; }
+  #reader { width:100%; border-radius:10px; overflow:hidden; margin-bottom:10px; }
+  .scan-hint { text-align:center; font-size:12px; color:#888; margin-bottom:16px; }
+
+  .manual-entry { background:white; border-radius:10px; padding:14px 16px; box-shadow:0 2px 6px rgba(0,0,0,0.08); margin-bottom:16px; }
+  .manual-entry label { display:block; font-size:12px; font-weight:bold; color:#555; margin-bottom:6px; }
+  .manual-row { display:flex; gap:8px; }
+  .manual-row input { flex:1; padding:10px; border-radius:8px; border:1px solid #ccc; font-size:14px; box-sizing:border-box; }
+  .manual-row button { padding:10px 16px; border:none; border-radius:8px; background:#4B0082; color:white; font-weight:bold; cursor:pointer; }
 
   .result-card { background:white; border-radius:12px; padding:18px; box-shadow:0 2px 8px rgba(0,0,0,0.1); display:none; }
   .result-card.show { display:block; }
@@ -38,6 +45,15 @@
   <div class="counters" id="counters"></div>
 
   <div id="reader"></div>
+  <p class="scan-hint">Hold the QR steady, well-lit, filling most of the frame. If it won't scan, use manual entry below.</p>
+
+  <div class="manual-entry">
+    <label>Manual Entry Code (backup if camera scan fails)</label>
+    <div class="manual-row">
+      <input id="manualCode" type="text" placeholder="e.g. ID-AB12CD" autocapitalize="characters">
+      <button onclick="submitManualCode()">Lookup</button>
+    </div>
+  </div>
 
   <div class="result-card" id="resultCard">
     <h3>Student Details</h3>
@@ -82,23 +98,35 @@
   function onScanSuccess(decodedText) {
     if (!scanning) return;
     scanning = false;
-    currentCode = decodedText.trim();
+    lookupCode(decodedText.trim(), () => { scanning = true; });
+  }
 
-    fetch(SCRIPT_URL + "?action=lookup&code=" + encodeURIComponent(currentCode))
+  function submitManualCode() {
+    const input = document.getElementById('manualCode');
+    const code = input.value.trim();
+    if (!code) return;
+    lookupCode(code, () => {});
+    input.value = '';
+  }
+
+  function lookupCode(code, onDone) {
+    currentCode = code;
+    fetch(SCRIPT_URL + "?action=lookup&code=" + encodeURIComponent(code))
       .then(r => r.json())
       .then(res => {
         document.getElementById('notFound').style.display = 'none';
         if (!res.found) {
           document.getElementById('notFound').style.display = 'block';
           document.getElementById('resultCard').classList.remove('show');
-          setTimeout(() => { scanning = true; }, 1500);
+          setTimeout(onDone, 1500);
           return;
         }
         showResult(res.member);
+        onDone();
       })
       .catch(err => {
         console.error('Lookup error:', err);
-        setTimeout(() => { scanning = true; }, 1500);
+        setTimeout(onDone, 1500);
       });
   }
 
@@ -149,12 +177,33 @@
       });
   }
 
-  const html5QrCode = new Html5Qrcode("reader");
+  const html5QrCode = new Html5Qrcode("reader", {
+    // Use the browser's native BarcodeDetector when available (Chrome/Android/desktop
+    // Chrome) - it's noticeably faster and more accurate than the default JS decoder.
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+    verbose: false
+  });
+
+  function qrboxFunction(viewfinderWidth, viewfinderHeight) {
+    const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+    const size = Math.floor(minEdge * 0.75); // large scan box = easier to fill with the code
+    return { width: size, height: size };
+  }
+
   html5QrCode.start(
     { facingMode: "environment" },
-    { fps: 10, qrbox: 250 },
-    onScanSuccess
-  ).catch(err => console.error("Camera start error:", err));
+    {
+      fps: 10,
+      qrbox: qrboxFunction,
+      aspectRatio: 1.0,
+      disableFlip: false
+    },
+    onScanSuccess,
+    (errorMessage) => { /* fires continuously while no code is found - ignore, this is normal */ }
+  ).catch(err => {
+    console.error("Camera start error:", err);
+    alert("Could not start camera: " + err + "\\nTry allowing camera permission, or use manual entry below.");
+  });
 </script>
 </body>
 </html>
