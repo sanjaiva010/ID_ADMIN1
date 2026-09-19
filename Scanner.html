@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin Scanner - ID Card Entry</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; background:#faf7f2; margin:0; padding:16px; color:#333; }
+  .wrap { max-width:520px; margin:0 auto; }
+  h1 { text-align:center; color:#4B0082; font-size:20px; }
+
+  .counters { display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+  .counter-card { background:white; border-radius:10px; padding:12px 16px; box-shadow:0 2px 6px rgba(0,0,0,0.08); display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+  .counter-card b { color:#4B0082; }
+  .counter-card .nums { font-weight:bold; font-size:16px; }
+
+  #reader { width:100%; border-radius:10px; overflow:hidden; margin-bottom:16px; }
+
+  .result-card { background:white; border-radius:12px; padding:18px; box-shadow:0 2px 8px rgba(0,0,0,0.1); display:none; }
+  .result-card.show { display:block; }
+  .result-card h3 { margin-top:0; color:#4B0082; }
+  .result-card .row { font-size:14px; margin:6px 0; }
+  .result-card .row b { display:inline-block; width:130px; }
+  .status-badge { display:inline-block; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:bold; }
+  .status-in { background:#e6f9ee; color:#1e8e3e; }
+  .status-new { background:#fff4e5; color:#e07b00; }
+
+  button#confirmBtn { width:100%; margin-top:14px; padding:12px; border:none; border-radius:8px; background:#1e8e3e; color:white; font-size:15px; font-weight:bold; cursor:pointer; }
+  button#confirmBtn:disabled { background:#ccc; }
+  #notFound { display:none; color:#c0392b; text-align:center; font-weight:bold; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Admin Scanner - Entry Check-in</h1>
+
+  <div class="counters" id="counters"></div>
+
+  <div id="reader"></div>
+
+  <div class="result-card" id="resultCard">
+    <h3>Student Details</h3>
+    <div class="row"><b>Name:</b> <span id="rName"></span></div>
+    <div class="row"><b>College:</b> <span id="rCollege"></span></div>
+    <div class="row"><b>Course:</b> <span id="rCourse"></span></div>
+    <div class="row"><b>Category:</b> <span id="rType"></span></div>
+    <div class="row"><b>Status:</b> <span id="rStatus"></span></div>
+    <button id="confirmBtn" onclick="confirmEntry()">Confirm Entry</button>
+  </div>
+
+  <div id="notFound">QR code not recognized. Try scanning again.</div>
+</div>
+
+<script>
+  // PASTE your Apps Script /exec URL here
+  const SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE";
+
+  let currentCode = null;
+  let scanning = true;
+
+  function loadStats() {
+    fetch(SCRIPT_URL + "?action=stats")
+      .then(r => r.json())
+      .then(stats => {
+        const el = document.getElementById('counters');
+        el.innerHTML = '';
+        Object.keys(stats).forEach(college => {
+          const s = stats[college];
+          const div = document.createElement('div');
+          div.className = 'counter-card';
+          div.innerHTML = `<span><b>${college}</b></span>
+            <span class="nums">${s.checkedIn} / ${s.total}</span>`;
+          el.appendChild(div);
+        });
+      })
+      .catch(err => console.error('Stats error:', err));
+  }
+  loadStats();
+  setInterval(loadStats, 8000);
+
+  function onScanSuccess(decodedText) {
+    if (!scanning) return;
+    scanning = false;
+    currentCode = decodedText.trim();
+
+    fetch(SCRIPT_URL + "?action=lookup&code=" + encodeURIComponent(currentCode))
+      .then(r => r.json())
+      .then(res => {
+        document.getElementById('notFound').style.display = 'none';
+        if (!res.found) {
+          document.getElementById('notFound').style.display = 'block';
+          document.getElementById('resultCard').classList.remove('show');
+          setTimeout(() => { scanning = true; }, 1500);
+          return;
+        }
+        showResult(res.member);
+      })
+      .catch(err => {
+        console.error('Lookup error:', err);
+        setTimeout(() => { scanning = true; }, 1500);
+      });
+  }
+
+  function showResult(member) {
+    document.getElementById('rName').innerText = member.name;
+    document.getElementById('rCollege').innerText = member.college;
+    document.getElementById('rCourse').innerText = member.course;
+    document.getElementById('rType').innerText = member.studentType;
+
+    const statusEl = document.getElementById('rStatus');
+    const btn = document.getElementById('confirmBtn');
+    if (member.alreadyCheckedIn) {
+      statusEl.innerHTML = '<span class="status-badge status-in">Already Checked In</span>';
+      btn.disabled = true;
+      btn.innerText = 'Already Confirmed';
+    } else {
+      statusEl.innerHTML = '<span class="status-badge status-new">Not Checked In</span>';
+      btn.disabled = false;
+      btn.innerText = 'Confirm Entry';
+    }
+
+    document.getElementById('resultCard').classList.add('show');
+  }
+
+  function confirmEntry() {
+    if (!currentCode) return;
+    const btn = document.getElementById('confirmBtn');
+    btn.disabled = true;
+    btn.innerText = 'Confirming...';
+
+    fetch(SCRIPT_URL + "?action=checkin&code=" + encodeURIComponent(currentCode))
+      .then(r => r.json())
+      .then(res => {
+        if (res.found) {
+          showResult(res.member);
+          loadStats();
+        }
+        setTimeout(() => {
+          document.getElementById('resultCard').classList.remove('show');
+          currentCode = null;
+          scanning = true;
+        }, 1800);
+      })
+      .catch(err => {
+        console.error('Checkin error:', err);
+        btn.disabled = false;
+        btn.innerText = 'Confirm Entry';
+      });
+  }
+
+  const html5QrCode = new Html5Qrcode("reader");
+  html5QrCode.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: 250 },
+    onScanSuccess
+  ).catch(err => console.error("Camera start error:", err));
+</script>
+</body>
+</html>
